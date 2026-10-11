@@ -229,6 +229,12 @@ namespace NekoJunoBridge
                 case "/config":
                     body = ConfigJson();
                     return 200;
+                case "/command":
+                    body = HandleCommand(query);
+                    return 200;
+                case "/controls":
+                    body = ControlApi.SnapshotJson;
+                    return 200;
                 case "/log":
                     body = LogJson(QueryInt(query, "n", 100));
                     return 200;
@@ -267,7 +273,8 @@ namespace NekoJunoBridge
                 .Key("ok").Boolean(true)
                 .Key("bridge").Text(JunoBridgePlugin.ModName)
                 .Key("version").Text(JunoBridgePlugin.PluginVersion)
-                .Key("mode").Text("read-only")
+                .Key("mode").Text(ControlApi.Enabled ? "read-write" : "read-only")
+                .Key("control").Boolean(ControlApi.Enabled)
                 .Key("in_flight").Boolean(Telemetry.InFlight)
                 .Key("port").Integer(Port)
                 .Key("game").Text(GameVersion());
@@ -282,9 +289,55 @@ namespace NekoJunoBridge
                 .Key("port").Integer(BridgeConfig.Port)
                 .Key("poll_interval_ms").Number(BridgeConfig.PollIntervalMs)
                 .Key("log_to_file").Boolean(BridgeConfig.LogToFile)
+                .Key("control_enabled").Boolean(ControlApi.Enabled)
+                .Key("read_only").Boolean(!ControlApi.Enabled)
                 .Key("config_path").Text(BridgeConfig.ConfigPath)
-                .Key("log_path").Text(BridgeLog.LogPath)
-                .Key("read_only").Boolean(true);
+                .Key("log_path").Text(BridgeLog.LogPath);
+            return w.ToString();
+        }
+
+        /// <summary>
+        /// 控制指令入口（GET，命令通过 query 参数传入）。线程安全：只入队，
+        /// 真正执行在主线程 Pump。返回是否入队成功 + 当前控制快照。
+        ///   /command?action=stage
+        ///   /command?action=hold&amp;axis=throttle&amp;value=0.8
+        ///   /command?action=hold&amp;axis=pitch&amp;value=0.3
+        ///   /command?action=ag_set&amp;group=1&amp;state=1
+        ///   /command?action=ag_toggle&amp;group=2
+        ///   /command?action=trans_mode&amp;state=1
+        ///   /command?action=zero        （松手，交还操纵权）
+        ///   /command?action=cut         （油门归零 + 松手）
+        /// </summary>
+        private static string HandleCommand(string query)
+        {
+            if (!ControlApi.Enabled)
+            {
+                return "{\"ok\":false,\"error\":\"control disabled (control_enabled=0)\"}";
+            }
+            string action = QueryString(query, "action", "");
+            if (string.IsNullOrEmpty(action))
+            {
+                return "{\"ok\":false,\"error\":\"missing action\"}";
+            }
+            string axis = QueryString(query, "axis", "");
+            float value = QueryFloat(query, "value", 0f);
+            int group = QueryInt(query, "group", 0);
+            int state = QueryInt(query, "state", -1);
+
+            bool queued = ControlApi.Enqueue(action, axis, value, group, state);
+
+            BridgeJson.Writer w = new BridgeJson.Writer();
+            w.StartObject()
+                .Key("ok").Boolean(queued)
+                .Key("action").Text(action)
+                .Key("queued").Boolean(queued)
+                .Key("engaged").Boolean(ControlApi.Engaged);
+            if (!queued)
+            {
+                w.Key("error").Text(ControlApi.LastError);
+            }
+            w.Key("controls").Value(ControlApi.SnapshotJson)
+                .EndObject();
             return w.ToString();
         }
 
@@ -326,10 +379,10 @@ namespace NekoJunoBridge
             sb.Append("padding:0 16px;line-height:1.7;color:#222}code{background:#f3f3f5;padding:2px 5px;border-radius:4px}");
             sb.Append("h1{font-size:22px}h2{font-size:16px;margin-top:28px}li{margin:4px 0}</style></head><body>");
             sb.Append("<h1>N.E.K.O-Juno-bridge <small>v").Append(JunoBridgePlugin.PluginVersion).Append("</small></h1>");
-            sb.Append("<p>《朱诺新起源》只读飞行遥测接口。任何程序都可以读，不依赖 N.E.K.O.。</p>");
-            sb.Append("<p><b>只读</strong></b> —— 它不会控制飞船、不动油门、不碰姿态。</p>");
+            sb.Append("<p>《朱诺新起源》飞行遥测 + 控制接口。任何程序都能读，控制需显式发命令，不依赖 N.E.K.O.。</p>");
+            sb.Append("<p><b>可读写</strong></b> —— 默认开放控制；只有收到 <code>/command?action=...</code> 才动飞船，<code>zero</code> / <code>cut</code> 随时把操纵权交还玩家。控制走 ModApi 内部通道，不注入系统级输入。</p>");
             sb.Append("<h2>接口</h2><ul>");
-            AppendRoute(sb, "/ping", "存活检查 + 版本 + 是否在飞行");
+            AppendRoute(sb, "/ping", "存活检查 + 版本 + 是否在飞行 + 是否可控制");
             AppendRoute(sb, "/state", "一次性拿到全部数据");
             AppendRoute(sb, "/vessel", "飞船基础信息与姿态");
             AppendRoute(sb, "/orbit", "轨道根数与入轨判断");
@@ -340,6 +393,8 @@ namespace NekoJunoBridge
             AppendRoute(sb, "/vessels", "本次飞行里的所有飞船");
             AppendRoute(sb, "/scene", "场景与时间加速状态");
             AppendRoute(sb, "/config", "当前配置");
+            AppendRoute(sb, "/command?action=stage", "控制：分级 / 油门 / 姿态 / 平移 / 激活组（发命令才生效）");
+            AppendRoute(sb, "/controls", "当前控制状态（engaged / held setpoint / 激活组）");
             AppendRoute(sb, "/log?n=100", "最近日志");
             sb.Append("</ul><h2>状态</h2><p>");
             sb.Append(Telemetry.InFlight ? "正在飞行，遥测可用。" : "当前不在飞行场景。");

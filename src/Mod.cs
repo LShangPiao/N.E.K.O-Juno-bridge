@@ -10,9 +10,11 @@
 //   它不修改游戏原文件，卸载就是删掉几个文件。
 //
 // 设计原则（与 N.E.K.O-KSP-bridge 一致）
-//   1. **只读** —— 只报数据，不控制飞船。玩家永远握着操纵杆。
-//   2. **公用** —— 不依赖 N.E.K.O.，任何程序都能读这个 HTTP 接口。
-//   3. **不打扰** —— 不弹窗、不改 UI、不接管输入。
+//   1. **可读写（默认开启，可被配置关掉）** —— 通过 /command 接口真正驱动飞船
+//      （油门 / 姿态 / 平移 / 分级 / 激活组）。命令只在玩家明确发出时才动飞船，
+//      且 zero / cut 可随时把操纵权交还玩家。
+//   2. **公用** —— 不依赖 N.E.K.O.，任何程序都能读（和写）这个 HTTP 接口。
+//   3. **不打扰** —— 不弹窗、不改 UI；控制走 ModApi 内部通道，不注入 OS 级输入。
 //
 // 生命周期（实测踩过的坑）
 //   BepInEx 挂在它自己的 manager 对象上的插件组件，在这个游戏里会在
@@ -44,7 +46,7 @@ namespace NekoJunoBridge
     {
         public const string PluginGuid = "top.xhth.neko.juno-bridge";
         public const string ModName = "N.E.K.O-Juno-bridge";
-        public const string PluginVersion = "0.1.0";
+        public const string PluginVersion = "0.2.0";
 
         private static GameObject runnerObject;
 
@@ -58,6 +60,10 @@ namespace NekoJunoBridge
 
                 BridgeLog.Write("插件目录: " + (dir ?? "(未知)"));
                 BridgeLog.Write("配置: " + BridgeConfig.Describe());
+
+                // 控制接口默认跟随配置开关（neko-juno-bridge.ini 里的 control_enabled）
+                ControlApi.Enabled = BridgeConfig.ControlEnabled;
+                BridgeLog.Write("控制接口: " + (BridgeConfig.ControlEnabled ? "已启用" : "已禁用"));
             }
             catch (Exception ex)
             {
@@ -190,12 +196,16 @@ namespace NekoJunoBridge
                 // 调试命令必须在主线程执行，且不该被采集节流拖慢
                 DebugProbe.Pump();
 #endif
+                GameAccess.Tick();
+
+                // 控制接口：出队执行一次性命令，并把 held setpoint 每帧写回 Controls。
+                // 内部按 Enabled 开关；只有 engaged 时才每帧写回（松手后把操纵权交还玩家）。
+                ControlApi.Pump();
+
                 if (!BridgeServer.IsRunning)
                 {
                     return;
                 }
-
-                GameAccess.Tick();
 
                 float now = Time.realtimeSinceStartup;
                 if (now < nextCapture)
@@ -226,6 +236,7 @@ namespace NekoJunoBridge
         public static int Port = 21577;
         public static double PollIntervalMs = 200;
         public static bool LogToFile = true;
+        public static bool ControlEnabled = true;
 
         public static string ConfigPath { get; private set; }
 
@@ -280,6 +291,10 @@ namespace NekoJunoBridge
                     {
                         LogToFile = value == "1" || value.ToLowerInvariant() == "true";
                     }
+                    else if (key == "control_enabled")
+                    {
+                        ControlEnabled = value == "1" || value.ToLowerInvariant() == "true";
+                    }
                 }
             }
             catch (Exception ex)
@@ -306,6 +321,10 @@ namespace NekoJunoBridge
                 sb.AppendLine();
                 sb.AppendLine("# 是否写日志文件（juno-bridge.log，超过 2 MB 自动截断）");
                 sb.AppendLine("log_to_file=true");
+                sb.AppendLine();
+                sb.AppendLine("# 是否开放控制接口（/command、/controls）");
+                sb.AppendLine("# 设 0 即回到纯只读；设 1 才允许外部程序真正驱动飞船");
+                sb.AppendLine("control_enabled=true");
                 File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
             }
             catch
@@ -315,7 +334,7 @@ namespace NekoJunoBridge
 
         public static string Describe()
         {
-            return "port=" + Port + " poll=" + PollIntervalMs + "ms log=" + LogToFile;
+            return "port=" + Port + " poll=" + PollIntervalMs + "ms log=" + LogToFile + " control=" + ControlEnabled;
         }
     }
 }

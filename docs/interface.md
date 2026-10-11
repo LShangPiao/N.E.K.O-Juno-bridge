@@ -20,8 +20,9 @@
 {
   "ok": true,
   "bridge": "N.E.K.O-Juno-bridge",
-  "version": "0.1.0",
-  "mode": "read-only",
+  "version": "0.2.0",
+  "mode": "read-write",
+  "control": true,
   "in_flight": true,
   "port": 21577,
   "game": "1.4.105"
@@ -37,7 +38,7 @@
   "ok": true,
   "ts": 227.165,
   "in_flight": true,
-  "bridge_version": "0.1.0",
+  "bridge_version": "0.2.0",
   "scene":  { ... },     // 同 /scene
   "vessel": { ... },     // 同 /vessel
   "orbit":  { ... },     // 同 /orbit
@@ -257,11 +258,66 @@
   "port": 21577,
   "poll_interval_ms": 200,
   "log_to_file": true,
+  "control_enabled": true,
+  "read_only": false,
   "config_path": "...\\neko-juno-bridge.ini",
-  "log_path": "...\\juno-bridge.log",
-  "read_only": true
+  "log_path": "...\\juno-bridge.log"
 }
 ```
+
+## `/command`
+
+控制指令入口（`GET`，参数走 query）。**命令只入队**，真正执行在主线程下一帧，
+因此返回的是「已入队」状态 + 当前控制快照，不等于「飞船已经动了」。
+
+### 动作（action）
+
+| action | 参数 | 说明 |
+| --- | --- | --- |
+| `stage` | — | 激活下一级（等效按空格） |
+| `hold` | `axis`,`value` | 把某轴设成 setpoint 并**持续保持**（每帧写回），直到 `zero`/`cut` |
+| `ag_set` | `group`,`state`(0/1) | 设置激活组开关（group 1–10） |
+| `ag_toggle` | `group` | 切换激活组 |
+| `trans_mode` | `state`(0/1) | 平移模式开关 |
+| `zero` | — | 清零所有 held setpoint + 刹车，交还操纵权 |
+| `cut` | — | 油门归零 + `zero`（紧急松手） |
+
+`axis` 取值：`throttle`(0–1) / `pitch` / `yaw` / `roll` / `translate_forward` /
+`translate_right` / `translate_up` / `brake`(0–1)，后六个为 -1–1。
+
+### 示例
+
+```
+# 点火前把油门推到 80%
+/command?action=hold&axis=throttle&value=0.8
+# 持续约 10° 仰角（setpoint，每帧保持）
+/command?action=hold&axis=pitch&value=0.17
+# 分级
+/command?action=stage
+# 激活组 1 打开
+/command?action=ag_set&group=1&state=1
+# 松手，交还人工操纵
+/command?action=zero
+```
+
+### 返回
+
+```json
+{"ok":true,"action":"hold","queued":true,"engaged":true,
+ "controls":{"ok":true,"engaged":true,"enabled":true,"in_flight":true,
+   "is_player_controlled":true,"current_stage":0,"num_stages":3,
+   "translation_mode":false,
+   "held":{"throttle":0.8,"pitch":0.17,"yaw":0.0,"roll":0.0,
+     "translate_forward":0.0,"translate_right":0.0,"translate_up":0.0,"brake":0.0},
+   "last_error":null}}
+```
+
+`control_enabled=0` 时任何 `/command` 都返回 `{"ok":false,"error":"control disabled ..."}`。
+
+## `/controls`
+
+只读当前控制状态（等价于 `/command` 返回里的 `controls` 字段），用于回显副驾驶此刻
+到底握着哪些 setpoint、是否 engaged、激活组是否开启。不修改任何游戏状态。
 
 ## `/log?n=100`
 

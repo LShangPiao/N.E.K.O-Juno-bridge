@@ -1,9 +1,9 @@
 # N.E.K.O-Juno-bridge
 
-> 给《朱诺新起源 Juno: New Origins》做的**只读飞行遥测桥接**。
-> 让 AI 副驾驶（猫娘）能读懂你正在飞的飞船，并陪着聊天给建议。
+> 给《朱诺新起源 Juno: New Origins》做的**飞行遥测 + 控制桥接**。
+> 让 AI 副驾驶（猫娘）既能读懂你正在飞的飞船，也能在收到明确指令时帮你开。
 
-发布名：**Neko Uplink** · 版本 **0.1.0** · 许可证 **GPL-3.0**
+发布名：**Neko Uplink** · 版本 **0.2.0** · 许可证 **GPL-3.0**
 
 ---
 
@@ -16,13 +16,17 @@
 这个模组把这些数据整理成外部程序能读的形式，让 AI 能**基于真实数字**开口，
 而不是瞎猜。
 
-## 定位：只读
+## 定位：可读写（控制默认开启）
 
-**不发控制指令、不动油门、不碰姿态、不写存档。** 操纵杆始终在玩家手里。
+遥测一直都在。**从 0.2.0 起，模组也能真正控制飞船** —— 通过 ModApi 的
+`ICommandPod.Controls` 驱动油门 / 姿态 / 平移 / 分级 / 激活组，不注入系统级输入。
 
-这不是妥协，是设计承诺 —— 让玩家能安心挂着，不用担心后台程序替他做了什么。
+控制是**显式**的：只有收到 `/command?action=...` 才会动飞船；
+发 `zero` 或 `cut` 会立刻清零并把操纵杆交还玩家。嫌它多事？
+在 `neko-juno-bridge.ini` 里把 `control_enabled` 设成 `0`，就回到纯只读。
 
-> 模组只提供 `GET` 接口，代码里不存在任何修改游戏状态的路径。
+> ⚠️ 注意：控制走的是游戏内部通道，玩家主动拉杆时会被桥的 setpoint 覆盖
+> （这正是「副驾驶」该有的行为）。松手（`zero`/`cut`）即恢复人工操纵。
 
 ## 为什么用 BepInEx（和 KSP 那个项目不同）
 
@@ -74,11 +78,11 @@ curl http://127.0.0.1:21577/ping
 
 ---
 
-## 接口（12 个，全部 GET）
+## 接口（14 个；遥测全 GET，控制用 /command）
 
 | 接口 | 内容 |
 | --- | --- |
-| `/ping` | 存活检查 + 版本 + 是否在飞行 |
+| `/ping` | 存活检查 + 版本 + 是否在飞行 + 是否可控制 |
 | `/state` | **一次性拿到全部数据** |
 | `/vessel` | 飞船基础信息与姿态 |
 | `/orbit` | 轨道根数与入轨判断 |
@@ -89,6 +93,8 @@ curl http://127.0.0.1:21577/ping
 | `/vessels` | 本次飞行里的所有飞船 |
 | `/scene` | 场景与时间加速状态 |
 | `/config` | 当前配置 |
+| `/command?action=stage` | **控制**：分级 / 油门 / 姿态 / 平移 / 激活组（发命令才生效） |
+| `/controls` | 当前控制状态（engaged / held setpoint / 激活组） |
 | `/log?n=100` | 最近日志 |
 
 浏览器直接打开 `http://127.0.0.1:21577/` 有一份索引页。
@@ -165,11 +171,10 @@ NaN / Infinity 一律输出 `null`，不会有非法 JSON。
 后台线程 HTTP 服务只读那些字符串，完全不碰任何 Unity 对象
 ```
 
-因为是只读，HTTP 线程可以独立应答，不需要回主线程排队。
+控制加入后，HTTP 线程改为「只入队」，命令在主线程 `Pump` 里出队执行 —— 与既有遥测采集共用同一条主线程循环。
 
-> ⚠️ **将来如果要加控制接口**（分级 / 油门 / 姿态），必须改成
-> 「HTTP 线程入队 → 主线程 `Update` 里执行」。
-> 在后台线程调用 Unity API 会直接让游戏崩 —— 姊妹项目踩过这个坑。
+> ✅ **控制接口已实现**：`ControlApi` 严格遵循「HTTP 线程入队 → 主线程 `Update` 执行」，
+> 持续型 setpoint 每帧写回 `CraftControls`，因此从后台线程碰 Unity API 的坑被彻底避开。
 
 ### 生命周期（这个游戏特有的坑）
 
@@ -206,6 +211,7 @@ JSON 也手写，输出结构固定、可控。
 port=21577              # HTTP 端口，只监听 127.0.0.1
 poll_interval_ms=200    # 遥测采集间隔，50-60000
 log_to_file=true        # 写 juno-bridge.log（超 2 MB 自动截断）
+control_enabled=true    # 是否开放控制接口（/command、/controls）；设 0 回到纯只读
 ```
 
 > 改端口要**同时**改 N.E.K.O. 插件配置里的 `bridge_url`，只改一处两边就连不上。
@@ -214,7 +220,8 @@ log_to_file=true        # 写 juno-bridge.log（超 2 MB 自动截断）
 
 ## 已知限制
 
-1. **只读** —— 不能控制飞船。这是**有意设计**，不是缺陷。
+1. **控制需显式开启** —— 默认 `control_enabled=1` 允许控制；设 `0` 即纯只读。
+   控制会覆盖玩家同轴的手动输入，松手用 `zero`/`cut` 交还操纵权。
 2. **依赖 BepInEx** —— 见上文「为什么用 BepInEx」。
 3. **游戏更新后可能需要重新适配** —— 遥测依赖游戏内部结构
    （`ModApi` 接口与 `FlightSceneScript`）。
@@ -233,7 +240,8 @@ juno-bridge/
 │   ├── Mod.cs            BepInEx 入口、配置
 │   ├── GameAccess.cs     飞行场景获取（名称查找 + 缓存）
 │   ├── Telemetry.cs      遥测采集（主线程）与快照渲染
-│   ├── BridgeServer.cs   HTTP 服务（手写 TcpListener）
+│   ├── BridgeServer.cs   HTTP 服务（手写 TcpListener，含 /command /controls）
+│   ├── ControlApi.cs     ★ 控制接口（0.2.0 新增）：队列 + 主线程执行，驱动 CraftControls
 │   ├── BridgeJson.cs     JSON 拼装（NaN/Inf -> null）
 │   ├── BridgeLog.cs      双写日志
 │   └── DebugProbe.cs     ★ 调试探针，仅在 -Debug 构建中存在，正式包不含
@@ -254,9 +262,8 @@ juno-bridge/
 
 **正式构建（`build.ps1` 不带 `-Debug`）不包含它的任何代码** ——
 可以用字符串扫描确认产物里不含 `debug/tap`、`TapByName` 等符号。
-正式包**只有只读接口**，不存在任何能改变游戏状态的端点。
+正式包包含**只读遥测 + 控制接口**；`control_enabled=0` 时控制端点直接拒绝，回到纯只读。
 
 ---
 
-*星河拓航Studio (Galaxy Exploration Studio) · 猫娘计划*
-*<https://xhth.top/> · GPL-3.0*
+*N.E.K.O-Juno-bridge · 猫娘计划 · GPL-3.0*
