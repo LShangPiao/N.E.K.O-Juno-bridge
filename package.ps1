@@ -81,10 +81,16 @@ This mod only serves GET requests and never changes game state.
 [System.IO.File]::WriteAllText((Join-Path $stage "README.txt"), $readme, (New-Object System.Text.UTF8Encoding($false)))
 
 # 4) zip
-$zip = Join-Path $OutDir "N-E-K-O-Juno-bridge-$Version.zip"
+$zip = Join-Path $OutDir "N.E.K.O-Juno-Bridge-v$Version-win-x64.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path (Join-Path $stage "*") -DestinationPath $zip -Force
 Write-Host "[package] wrote $zip ($((Get-Item $zip).Length) bytes)"
+
+# checksum - same step as the sibling SP2 bridge package
+$sha = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+$sums = Join-Path $OutDir "SHA256SUMS.txt"
+Set-Content -LiteralPath $sums -Value ("$sha  $(Split-Path $zip -Leaf)") -Encoding ASCII
+Write-Host "[package] SHA256: $sha"
 
 Write-Host "[package] contents:"
 Add-Type -AssemblyName System.IO.Compression.FileSystem
