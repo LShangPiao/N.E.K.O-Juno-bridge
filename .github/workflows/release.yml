@@ -1,0 +1,102 @@
+name: Release
+
+# 打 v* tag 时自动构建「解压即用」的分发包。
+#
+# 为什么不在 CI 里跑 build.ps1 编译：
+# 本模组编译时引用**游戏本体的程序集**（SimpleRockets2_Data/Managed/*.dll），
+# 那些是有版权的游戏文件，不能放进 runner。所以 JunoBridge.dll 由开发者本机
+# 编译后**提交进仓库**（见 .gitignore 的 !dist/JunoBridge.dll），
+# CI 用 package.ps1 -SkipBuild 直接拿它打包。
+#
+# BepInEx 本体则是公开可下载的，CI 会拉下来一起打进 zip ——
+# 这正是「解压即用」的关键。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "要打包的版本号（不带前缀 v）"
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  BEPINEX_URL: https://github.com/BepInEx/BepInEx/releases/download/v5.4.23.5/BepInEx_win_x64_5.4.23.5.zip
+
+jobs:
+  release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $v = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $v = "${{ github.event.inputs.version }}"
+          }
+          if (-not $v) { $v = "0.0.0" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          Write-Host "packaging version $v"
+
+      - name: Fetch BepInEx payload
+        shell: pwsh
+        run: |
+          $dest = "tools\bepinex-payload"
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP "bepinex.zip"
+          Invoke-WebRequest -Uri $env:BEPINEX_URL -OutFile $zip
+          $out = Join-Path $env:RUNNER_TEMP "bepinex-extract"
+          Expand-Archive -LiteralPath $zip -DestinationPath $out -Force
+          # 官方 zip 顶层就是 BepInEx/ 加几个加载器文件，整体搬到我们的 payload 目录
+          Get-ChildItem $out -Force | ForEach-Object {
+            Copy-Item $_.FullName -Destination $dest -Recurse -Force
+          }
+          Write-Host "payload staged:"
+          Get-ChildItem $dest -Force | Select-Object Name, Length | Format-Table
+
+      - name: Package drop-in zip
+        shell: pwsh
+        run: |
+          .\package.ps1 -SkipBuild -Version "${{ steps.ver.outputs.version }}"
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+          body: |
+            ## N.E.K.O-Juno-bridge ${{ github.ref_name }}
+
+            《朱诺新起源 Juno: New Origins》（原名 SimpleRockets 2）的飞行遥测桥接。
+
+            ### 定位
+
+            遥测全部是 `GET`，**只读**。控制走单独的 `/command`，
+            且在 `neko-juno-bridge.ini` 里设 `control_enabled=0` 即可完全关闭。
+
+            ### 安装（解压即用）
+
+            1. 下载下面的 `N.E.K.O-Juno-Bridge-v*-win-x64.zip`
+            2. **把 zip 里的东西全部解压到游戏根目录**（和 `SimpleRockets2.exe` 同级）
+            3. 启动游戏，访问 <http://127.0.0.1:21577/ping>
+
+            > zip 里**已经带了 BepInEx 5.4.23.5（Mono x64）**，不用另外下载。
+            > 已经装过 BepInEx 的话，只需 `BepInEx\plugins\N.E.K.O-Juno-bridge\`。
+            > 校验和见 `SHA256SUMS.txt`。
+
+            ### 实测环境
+
+            Juno: New Origins **1.4.105** + BepInEx 5.4（Mono x64）。
+            飞船状态、轨道根数、大气数据、22 个天体均已实机核对。

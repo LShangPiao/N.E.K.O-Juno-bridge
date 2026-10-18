@@ -1,5 +1,14 @@
 # 编译产物
-dist/
+#
+# 和其它姊妹项目不同：这里**把 JunoBridge.dll 提交进仓库**。
+# 原因很实际 —— 本模组的编译依赖游戏本体的程序集
+# （SimpleRockets2_Data/Managed/*.dll），那些是有版权的游戏文件，
+# 不能放进 CI，所以 GitHub Actions 无法构建它。
+# 而 DLL 只有 51 KB，直接随仓库分发，CI 才能打出「解压即用」的包。
+# 其余中间产物仍然忽略。
+dist/*
+!dist/JunoBridge.dll
+!dist/README.md
 
 # 游戏程序集引用（体积大，且属于游戏本体，不进仓库）
 refs/

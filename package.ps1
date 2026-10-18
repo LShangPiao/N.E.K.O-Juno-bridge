@@ -2,7 +2,11 @@
 # NOTE: keep this file pure ASCII (Windows PowerShell 5.1 reads BOM-less files as ANSI).
 param(
     [string]$Version = "0.1.0",
-    [string]$OutDir = ""
+    [string]$OutDir = "",
+    # Skip the build and package whatever is already in dist\.
+    # CI uses this: compiling needs the game's own assemblies, which cannot
+    # be shipped to a runner, so the DLL is committed to the repo instead.
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = "Stop"
